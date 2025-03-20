@@ -1,0 +1,10 @@
+{
+  "id": "review-scheduler",
+  "name": "Review Scheduler",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "一个基于间隔重复法的笔记复习排程插件",
+  "author": "Obsidian User",
+  "authorUrl": "https://github.com/yourusername",
+  "isDesktopOnly": false
+}

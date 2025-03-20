@@ -1,0 +1,163 @@
+/* 复习排程器样式 */
+
+.review-scheduler-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.review-scheduler-header {
+  padding: 1em;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.review-scheduler-header h1 {
+  margin: 0;
+  font-size: 1.5em;
+}
+
+.review-scheduler-content {
+  padding: 1em;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* 快捷键提示 */
+.review-shortcuts-info {
+  margin-bottom: 1em;
+  padding: 0.5em;
+  background-color: var(--background-secondary);
+  border-radius: 4px;
+}
+
+.review-shortcuts-text {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--text-muted);
+}
+
+.review-section {
+  margin-bottom: 2em;
+}
+
+/* 开始复习按钮 */
+.review-now-button {
+  margin-top: 1em;
+  padding: 8px 16px;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background-color 0.2s;
+  width: 100%;
+}
+
+.review-now-button:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+/* 笔记列表样式 */
+.review-section ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.review-section li {
+  display: flex;
+  padding: 0.8em;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  margin-bottom: 0.8em;
+  background-color: var(--background-primary);
+}
+
+.review-section li:last-child {
+  margin-bottom: 0;
+}
+
+/* 当前复习笔记高亮 */
+.current-review-note {
+  border-left: 4px solid var(--interactive-accent) !important;
+}
+
+.review-note-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.review-note-title {
+  font-weight: bold;
+  font-size: 1.1em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70%;
+}
+
+.review-note-date {
+  font-size: 0.9em;
+  color: var(--text-muted);
+  margin-left: 1em;
+}
+
+/* 按钮样式 */
+.review-item-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 0.5em;
+}
+
+.review-item-buttons button {
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: none;
+  font-size: 0.9em;
+  transition: background-color 0.2s;
+}
+
+.review-open-button {
+  background-color: var(--background-secondary-alt);
+  color: var(--text-normal);
+}
+
+.review-open-button:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.review-next-button {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.review-next-button:hover {
+  background-color: var(--interactive-accent-hover);
+}
+
+.review-set-aside-button {
+  background-color: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+.review-set-aside-button:hover {
+  background-color: var(--background-modifier-error-hover);
+}
+
+/* 即将到来的复习笔记样式 */
+.review-section ul li {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6em;
+}
+
+.review-section ul li button {
+  margin-left: 10px;
+}
