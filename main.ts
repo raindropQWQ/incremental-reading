@@ -204,16 +204,23 @@ export default class ReviewSchedulerPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.scanNotesForReview());
   }
 
-  // 新增：辅助函数，获取当前应操作的笔记
+  // 修正后的辅助函数
   private getNoteForAction(): ReviewNote | null {
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    
     // 优先：当前打开的笔记
-    if (activeView?.file) {
-      const noteInQueue = this.reviewQueue.find(n => n.file.path === activeView.file.path);
-      if (noteInQueue) {
-        return noteInQueue;
+    // 使用嵌套的 if 语句进行更明确的空值检查
+    if (activeView) {
+      const activeFile = activeView.file;
+      if (activeFile) {
+        // 在这个块内部, activeFile 被 TypeScript 编译器确认为 TFile 类型
+        const noteInQueue = this.reviewQueue.find(n => n.file.path === activeFile.path);
+        if (noteInQueue) {
+          return noteInQueue;
+        }
       }
     }
+
     // 备选：侧边栏视图中的第一个到期笔记
     const sidebarView = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
     if (sidebarView?.currentNote) {
@@ -228,7 +235,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
     return null;
   }
   
-  // 新增：辅助函数，刷新侧边栏视图
   private refreshView() {
     const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
     if (view) {
@@ -236,7 +242,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
     }
   }
 
-  // 新增：封装删除逻辑
   async handleDelete(currentNote: ReviewNote) {
     const confirmDelete = await new Promise<boolean>((resolve) => {
       const modal = new Modal(this.app);
@@ -298,7 +303,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
     }
   }
 
-  // 重构：扫描和排序逻辑
   async scanNotesForReview() {
     console.log('开始扫描笔记...');
     this.reviewQueue = [];
@@ -336,7 +340,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
       this.reviewQueue.push({ file, reviewDate, repHistory, priority });
     }
 
-    // 解决问题1：增加按创建时间排序，确保稳定性
     this.reviewQueue.sort((a, b) => {
       const dateCompare = a.reviewDate.getTime() - b.reviewDate.getTime();
       if (dateCompare !== 0) return dateCompare;
@@ -358,7 +361,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
       return noteDate.getTime() > today.getTime();
     });
 
-    // 解决问题4：按优先级分组
     const priorityGroups = {
       high: dueNotes.filter(n => n.priority === 'high'),
       medium: dueNotes.filter(n => n.priority === 'medium'),
@@ -366,7 +368,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
       none: dueNotes.filter(n => n.priority === null),
     };
 
-    // 解决问题2：组内乱序
     const shuffle = (array: ReviewNote[]) => {
       for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -375,7 +376,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
       return array;
     };
 
-    // 重建队列：高 -> 中 -> 低 -> 无优先级 -> 即将到来
     this.reviewQueue = [
       ...shuffle(priorityGroups.high),
       ...shuffle(priorityGroups.medium),
@@ -388,14 +388,12 @@ export default class ReviewSchedulerPlugin extends Plugin {
     this.refreshView();
   }
 
-  // 重构：计算下次复习日期，增加随机性
   calculateNextReviewDate(repHistory: Date[], priority: 'high' | 'medium' | 'low' | null = null): Date {
     const today = new Date();
     const interval = Math.ceil(this.settings.multiplier ** Math.max(repHistory.length, 1));
     const priorityMultiplier = priority ? this.settings.priorityMultipliers[priority] : 1.0;
     const adjustedInterval = Math.ceil(interval * priorityMultiplier);
 
-    // 解决问题2：增加随机因子
     const randomFuzz = (Math.random() - 0.5) * 2 * this.settings.randomness;
     const finalInterval = Math.max(1, Math.round(adjustedInterval * (1 + randomFuzz)));
 
@@ -410,7 +408,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
     note.reviewDate = this.calculateNextReviewDate(note.repHistory, note.priority);
     await this.updateNoteMetadata(note.file, note.reviewDate, note.repHistory);
     
-    // 从队列中移除并重新排序
     this.reviewQueue = this.reviewQueue.filter((n) => n.file.path !== note.file.path);
     this.reviewQueue.push(note);
     this.reviewQueue.sort((a, b) => a.reviewDate.getTime() - b.reviewDate.getTime());
@@ -459,7 +456,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
     }
   }
 
-  // updateNoteMetadata, removeNoteReviewMetadata, setNotePriority 保持不变...
   async updateNoteMetadata(file: TFile, reviewDate: Date, repHistory: Date[]) {
     const content = await this.app.vault.read(file);
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
@@ -475,13 +471,11 @@ export default class ReviewSchedulerPlugin extends Plugin {
     }
 
     if (!frontmatter) {
-      // 如果没有frontmatter，则添加一个
       const newContent = `---\nreviewDate: ${reviewDate.toISOString()}\nrepHistory: ${JSON.stringify(
         repHistory
       )}\ntags: [review]\n---\n\n${content}`;
       await this.app.vault.modify(file, newContent);
     } else {
-      // 更新现有的frontmatter
       let newContent = content;
       const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
       const match = content.match(frontmatterRegex);
@@ -489,7 +483,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
       if (match) {
         let frontmatterContent = match[1];
 
-        // 更新reviewDate
         if (frontmatterContent.includes("reviewDate:")) {
           frontmatterContent = frontmatterContent.replace(
             /reviewDate:.*/,
@@ -499,7 +492,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
           frontmatterContent += `\nreviewDate: ${reviewDate.toISOString()}`;
         }
 
-        // 更新repHistory
         if (frontmatterContent.includes("repHistory:")) {
           frontmatterContent = frontmatterContent.replace(
             /repHistory:.*/,
@@ -654,7 +646,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
   }
 }
 
-// ReviewSchedulerView 保持不变...
 class ReviewSchedulerView extends ItemView {
   plugin: ReviewSchedulerPlugin;
   currentNote: ReviewNote | null = null;
@@ -797,7 +788,6 @@ class ReviewSchedulerView extends ItemView {
   }
 }
 
-// 更新设置选项卡
 class ReviewSchedulerSettingTab extends PluginSettingTab {
   plugin: ReviewSchedulerPlugin;
 
@@ -827,7 +817,6 @@ class ReviewSchedulerSettingTab extends PluginSettingTab {
           })
       );
 
-    // 新增：排程随机度设置
     new Setting(containerEl)
       .setName("排程随机度")
       .setDesc("为复习间隔增加随机性，避免笔记总在同一时间扎堆。例如0.1代表+/-10%的随机延迟。")
@@ -897,7 +886,6 @@ class ReviewSchedulerSettingTab extends PluginSettingTab {
         text.setValue(this.plugin.settings.randomFactor.toString()).setDisabled(true);
       });
 
-    // 快捷键设置保持不变...
     containerEl.createEl("h3", { text: "快捷键设置" });
     new Setting(containerEl).setName("开始复习").setDesc("打开当前需要复习的笔记").addText((text) => text.setValue(this.plugin.settings.hotkeys.startReview).onChange(async (value) => { this.plugin.settings.hotkeys.startReview = value; await this.plugin.saveSettings(); }));
     new Setting(containerEl).setName("删除笔记").setDesc("从复习队列中删除当前笔记").addText((text) => text.setValue(this.plugin.settings.hotkeys.deleteNote).onChange(async (value) => { this.plugin.settings.hotkeys.deleteNote = value; await this.plugin.saveSettings(); }));
@@ -907,7 +895,6 @@ class ReviewSchedulerSettingTab extends PluginSettingTab {
   }
 }
 
-// SetReviewDateModal 保持不变...
 class SetReviewDateModal extends Modal {
   note: ReviewNote;
   plugin: ReviewSchedulerPlugin;
@@ -939,7 +926,7 @@ class SetReviewDateModal extends Modal {
       
       const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
       if (view) {
-        view.plugin.scanNotesForReview(); // 重新扫描并排序
+        view.plugin.scanNotesForReview();
       }
       
       this.close();
