@@ -30,6 +30,7 @@ interface ReviewSchedulerSettings {
     low: number;
   };
   randomFactor: number; // 0-1 之间的随机因子，用于低优先级提前复习的概率
+  randomness: number; // 新增：用于间隔计算的随机性
   hotkeys: {
     startReview: string;
     deleteNote: string;
@@ -47,6 +48,7 @@ const DEFAULT_SETTINGS: ReviewSchedulerSettings = {
     low: 1.2,     // 低优先级增加 20% 的延迟
   },
   randomFactor: 0.2, // 20% 的概率让低优先级提前复习
+  randomness: 0.1, // 新增：为复习间隔增加 +/-10% 的随机性
   hotkeys: {
     startReview: "ctrl+shift+r",
     deleteNote: "ctrl+shift+d",
@@ -63,217 +65,216 @@ export default class ReviewSchedulerPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
 
-    // 添加文件变更监听
-    this.registerEvent(
-      this.app.vault.on('modify', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.scanNotesForReview();
-        }
-      })
-    );
-    this.registerEvent(
-      this.app.vault.on('create', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.scanNotesForReview();
-        }
-      })
-    );
-    this.registerEvent(
-      this.app.vault.on('delete', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.scanNotesForReview();
-        }
-      })
-    );
+    // 事件监听保持不变...
+    this.registerEvent(this.app.vault.on('modify', (file) => { if (file instanceof TFile && file.extension === 'md') this.scanNotesForReview(); }));
+    this.registerEvent(this.app.vault.on('create', (file) => { if (file instanceof TFile && file.extension === 'md') this.scanNotesForReview(); }));
+    this.registerEvent(this.app.vault.on('delete', (file) => { if (file instanceof TFile && file.extension === 'md') this.scanNotesForReview(); }));
+    this.registerEvent(this.app.metadataCache.on('changed', (file) => { if (file instanceof TFile && file.extension === 'md') this.scanNotesForReview(); }));
 
-    // 添加元数据缓存变更监听
-    this.registerEvent(
-      this.app.metadataCache.on('changed', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.scanNotesForReview();
-        }
-      })
-    );
+    this.registerView("review-scheduler-view", (leaf) => new ReviewSchedulerView(leaf, this));
 
-    // 添加视图
-    this.registerView(
-      "review-scheduler-view",
-      (leaf) => new ReviewSchedulerView(leaf, this)
-    );
-
-    // 添加命令
     this.addCommand({
       id: "open-review-scheduler",
       name: "打开复习排程器",
       callback: () => this.activateView(),
     });
 
-    // 添加复习相关命令
+    // 使用 checkCallback 重构所有命令，使其具有上下文感知能力
     this.addCommand({
       id: "review-next",
       name: "复习：下一步",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          const currentNote = view.currentNote;
-          await this.handleNext(currentNote);
-          view.render();
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.handleNext(note).then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       },
     });
 
     this.addCommand({
       id: "review-set-aside",
       name: "复习：搁置",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          const currentNote = view.currentNote;
-          await this.handleSetAside(currentNote);
-          view.render();
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.handleSetAside(note).then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       },
     });
 
-    // 添加新的命令
     this.addCommand({
       id: "review-start",
       name: "复习：开始复习",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          this.app.workspace.getLeaf(true).openFile(view.currentNote.file);
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.app.workspace.getLeaf(true).openFile(note.file);
+          }
+          return true;
         }
+        return false;
       },
     });
 
     this.addCommand({
       id: "review-delete",
       name: "复习：删除当前笔记",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          const currentNote = view.currentNote;
-          
-          // 创建确认对话框
-          const confirmDelete = await new Promise<boolean>((resolve) => {
-            const modal = new Modal(this.app);
-            modal.contentEl.createEl("h2", { text: "确认删除" });
-            modal.contentEl.createEl("p", { 
-              text: `确定要删除笔记 "${currentNote.file.basename}" 吗？此操作不可撤销。`
-            });
-            
-            const buttonContainer = modal.contentEl.createDiv({ cls: "modal-button-container" });
-            
-            const confirmButton = buttonContainer.createEl("button", { 
-              text: "删除",
-              cls: "mod-warning"
-            });
-            confirmButton.addEventListener("click", () => {
-              resolve(true);
-              modal.close();
-            });
-            
-            const cancelButton = buttonContainer.createEl("button", { text: "取消" });
-            cancelButton.addEventListener("click", () => {
-              resolve(false);
-              modal.close();
-            });
-            
-            modal.open();
-          });
-          
-          if (!confirmDelete) return;
-          
-          // 关闭当前笔记
-          const leaves = this.app.workspace.getLeavesOfType("markdown");
-          for (const leaf of leaves) {
-            if (leaf.view instanceof MarkdownView && leaf.view.file?.path === currentNote.file.path) {
-              leaf.detach();
-              break;
-            }
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.handleDelete(note); // 封装删除逻辑
           }
-          
-          // 从队列中移除笔记
-          this.reviewQueue = this.reviewQueue.filter(
-            (n) => n.file.path !== currentNote.file.path
-          );
-          
-          // 真正删除笔记文件
-          await this.app.vault.delete(currentNote.file);
-          
-          // 打开下一篇笔记
-          if (this.reviewQueue.length > 0) {
-            const nextNote = this.reviewQueue[0];
-            if (nextNote) {
-              this.app.workspace.getLeaf(true).openFile(nextNote.file);
-            }
-          }
-          
-          view.render();
-          new Notice(`笔记 "${currentNote.file.basename}" 已永久删除`);
+          return true;
         }
+        return false;
       },
     });
 
     this.addCommand({
       id: "review-set-priority-high",
       name: "复习：设置为高优先级",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          await this.setNotePriority(view.currentNote, 'high');
-          view.render();
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.setNotePriority(note, 'high').then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       },
     });
 
     this.addCommand({
       id: "review-set-priority-medium",
       name: "复习：设置为中优先级",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          await this.setNotePriority(view.currentNote, 'medium');
-          view.render();
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.setNotePriority(note, 'medium').then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       },
     });
 
     this.addCommand({
       id: "review-set-priority-low",
       name: "复习：设置为低优先级",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          await this.setNotePriority(view.currentNote, 'low');
-          view.render();
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.setNotePriority(note, 'low').then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       },
     });
 
     this.addCommand({
       id: "review-set-custom-date",
       name: "复习：设置自定义复习日期",
-      callback: async () => {
-        const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
-        if (view?.currentNote) {
-          const modal = new SetReviewDateModal(this.app, view.currentNote, this);
-          modal.open();
+      checkCallback: (checking: boolean) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            new SetReviewDateModal(this.app, note, this).open();
+          }
+          return true;
         }
+        return false;
       },
     });
 
-    // 添加设置选项卡
     this.addSettingTab(new ReviewSchedulerSettingTab(this.app, this));
-
-    // 在加载时扫描所有带review标签的笔记
     this.app.workspace.onLayoutReady(() => this.scanNotesForReview());
   }
 
-  onunload() {
-    // 清理操作
+  // 新增：辅助函数，获取当前应操作的笔记
+  private getNoteForAction(): ReviewNote | null {
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    // 优先：当前打开的笔记
+    if (activeView?.file) {
+      const noteInQueue = this.reviewQueue.find(n => n.file.path === activeView.file.path);
+      if (noteInQueue) {
+        return noteInQueue;
+      }
+    }
+    // 备选：侧边栏视图中的第一个到期笔记
+    const sidebarView = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
+    if (sidebarView?.currentNote) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const noteDate = new Date(sidebarView.currentNote.reviewDate);
+      noteDate.setHours(0, 0, 0, 0);
+      if (noteDate.getTime() <= today.getTime()) {
+        return sidebarView.currentNote;
+      }
+    }
+    return null;
   }
+  
+  // 新增：辅助函数，刷新侧边栏视图
+  private refreshView() {
+    const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
+    if (view) {
+      view.render();
+    }
+  }
+
+  // 新增：封装删除逻辑
+  async handleDelete(currentNote: ReviewNote) {
+    const confirmDelete = await new Promise<boolean>((resolve) => {
+      const modal = new Modal(this.app);
+      modal.contentEl.createEl("h2", { text: "确认删除" });
+      modal.contentEl.createEl("p", { text: `确定要删除笔记 "${currentNote.file.basename}" 吗？此操作不可撤销。` });
+      const buttonContainer = modal.contentEl.createDiv({ cls: "modal-button-container" });
+      const confirmButton = buttonContainer.createEl("button", { text: "删除", cls: "mod-warning" });
+      confirmButton.addEventListener("click", () => { resolve(true); modal.close(); });
+      const cancelButton = buttonContainer.createEl("button", { text: "取消" });
+      cancelButton.addEventListener("click", () => { resolve(false); modal.close(); });
+      modal.open();
+    });
+
+    if (!confirmDelete) return;
+
+    const leaves = this.app.workspace.getLeavesOfType("markdown");
+    for (const leaf of leaves) {
+      if (leaf.view instanceof MarkdownView && leaf.view.file?.path === currentNote.file.path) {
+        leaf.detach();
+        break;
+      }
+    }
+
+    this.reviewQueue = this.reviewQueue.filter((n) => n.file.path !== currentNote.file.path);
+    await this.app.vault.delete(currentNote.file);
+
+    if (this.reviewQueue.length > 0) {
+      const nextNote = this.reviewQueue[0];
+      if (nextNote) {
+        this.app.workspace.getLeaf(true).openFile(nextNote.file);
+      }
+    }
+
+    this.refreshView();
+    new Notice(`笔记 "${currentNote.file.basename}" 已永久删除`);
+  }
+
+  onunload() {}
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -283,29 +284,21 @@ export default class ReviewSchedulerPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  // 激活视图
   async activateView() {
     const { workspace } = this.app;
-
-    // 如果视图已经打开，则获取焦点
     const leaves = workspace.getLeavesOfType("review-scheduler-view");
     if (leaves.length > 0) {
       workspace.revealLeaf(leaves[0]);
       return;
     }
-
-    // 否则新建一个视图
     const leaf = workspace.getLeftLeaf(false);
     if (leaf) {
-      await leaf.setViewState({
-        type: "review-scheduler-view",
-        active: true,
-      });
+      await leaf.setViewState({ type: "review-scheduler-view", active: true });
       workspace.revealLeaf(leaf);
     }
   }
 
-  // 扫描所有带review标签的笔记
+  // 重构：扫描和排序逻辑
   async scanNotesForReview() {
     console.log('开始扫描笔记...');
     this.reviewQueue = [];
@@ -313,40 +306,19 @@ export default class ReviewSchedulerPlugin extends Plugin {
 
     for (const file of files) {
       const metadata = this.app.metadataCache.getFileCache(file);
-      
-      // 检查所有可能的标签位置
       let hasReviewTag = false;
       let priority: 'high' | 'medium' | 'low' | null = null;
-      
-      // 检查 frontmatter 中的标签
+
       if (metadata?.frontmatter?.tags) {
-        let tags: string[] = [];
-        
-        if (Array.isArray(metadata.frontmatter.tags)) {
-          tags = metadata.frontmatter.tags;
-          console.log(`文件 ${file.basename} 使用数组格式的标签:`, tags);
-        } else if (typeof metadata.frontmatter.tags === 'string') {
-          // 处理空格分隔的标签字符串，例如 "review priority-medium"
-          tags = metadata.frontmatter.tags.split(/\s+/);
-          console.log(`文件 ${file.basename} 使用空格分隔的标签字符串:`, metadata.frontmatter.tags, "分割后:", tags);
-        } else {
-          tags = [metadata.frontmatter.tags];
-          console.log(`文件 ${file.basename} 使用其他格式的标签:`, metadata.frontmatter.tags);
-        }
-        
-        hasReviewTag = tags.some(tag => 
-          typeof tag === 'string' && tag.toLowerCase().startsWith('review'));
-        
+        const tags = Array.isArray(metadata.frontmatter.tags) ? metadata.frontmatter.tags : String(metadata.frontmatter.tags).split(/\s+/);
+        hasReviewTag = tags.some(tag => String(tag).toLowerCase().startsWith('review'));
         if (tags.includes('priority-high')) priority = 'high';
         else if (tags.includes('priority-medium')) priority = 'medium';
         else if (tags.includes('priority-low')) priority = 'low';
       }
-      
-      // 检查文件中的内联标签
+
       if (!hasReviewTag && metadata?.tags) {
-        hasReviewTag = metadata.tags.some(tag => 
-          tag.tag.toLowerCase().startsWith('#review'));
-        
+        hasReviewTag = metadata.tags.some(tag => tag.tag.toLowerCase().startsWith('#review'));
         if (!priority) {
           if (metadata.tags.some(tag => tag.tag === '#priority-high')) priority = 'high';
           else if (metadata.tags.some(tag => tag.tag === '#priority-medium')) priority = 'medium';
@@ -358,106 +330,93 @@ export default class ReviewSchedulerPlugin extends Plugin {
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
-      const reviewDate = metadata?.frontmatter?.reviewDate
-        ? new Date(metadata.frontmatter.reviewDate)
-        : today;
+      const reviewDate = metadata?.frontmatter?.reviewDate ? new Date(metadata.frontmatter.reviewDate) : today;
       const repHistory = metadata?.frontmatter?.repHistory || [];
 
-      try {
-        console.log(`处理笔记 ${file.basename} 的复习日期:`, metadata?.frontmatter?.reviewDate);
-        console.log(`转换后的日期对象:`, reviewDate);
-        console.log(`复习历史:`, repHistory);
-      } catch (error) {
-        console.error(`笔记 ${file.basename} 的日期格式错误:`, metadata?.frontmatter?.reviewDate);
-        console.error('错误详情:', error);
-      }
-
-      this.reviewQueue.push({
-        file,
-        reviewDate,
-        repHistory,
-        priority,
-      });
+      this.reviewQueue.push({ file, reviewDate, repHistory, priority });
     }
 
-    // 按复习日期和优先级排序
+    // 解决问题1：增加按创建时间排序，确保稳定性
     this.reviewQueue.sort((a, b) => {
       const dateCompare = a.reviewDate.getTime() - b.reviewDate.getTime();
       if (dateCompare !== 0) return dateCompare;
-
-      const priorityOrder = { high: 0, medium: 1, low: 2 };
-      const aPriority = a.priority ? priorityOrder[a.priority] : 3;
-      const bPriority = b.priority ? priorityOrder[b.priority] : 3;
-      return aPriority - bPriority;
+      return a.file.stat.ctime - b.file.stat.ctime;
     });
 
-    // 应用随机因子，让低优先级内容有机会提前复习
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
-    const todayNotes = this.reviewQueue.filter(note => {
+
+    const dueNotes = this.reviewQueue.filter(note => {
       const noteDate = new Date(note.reviewDate);
       noteDate.setHours(0, 0, 0, 0);
-      return noteDate.getTime() <= today.getTime() && note.priority === 'low';
+      return noteDate.getTime() <= today.getTime();
     });
 
-    if (todayNotes.length > 0) {
-      for (let i = todayNotes.length - 1; i > 0; i--) {
-        if (Math.random() < this.settings.randomFactor) {
-          const randomIndex = Math.floor(Math.random() * (i + 1));
-          const temp = todayNotes[i];
-          todayNotes[i] = todayNotes[randomIndex];
-          todayNotes[randomIndex] = temp;
-        }
+    const upcomingNotes = this.reviewQueue.filter(note => {
+      const noteDate = new Date(note.reviewDate);
+      noteDate.setHours(0, 0, 0, 0);
+      return noteDate.getTime() > today.getTime();
+    });
+
+    // 解决问题4：按优先级分组
+    const priorityGroups = {
+      high: dueNotes.filter(n => n.priority === 'high'),
+      medium: dueNotes.filter(n => n.priority === 'medium'),
+      low: dueNotes.filter(n => n.priority === 'low'),
+      none: dueNotes.filter(n => n.priority === null),
+    };
+
+    // 解决问题2：组内乱序
+    const shuffle = (array: ReviewNote[]) => {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
       }
-    }
+      return array;
+    };
+
+    // 重建队列：高 -> 中 -> 低 -> 无优先级 -> 即将到来
+    this.reviewQueue = [
+      ...shuffle(priorityGroups.high),
+      ...shuffle(priorityGroups.medium),
+      ...shuffle(priorityGroups.low),
+      ...shuffle(priorityGroups.none),
+      ...upcomingNotes
+    ];
 
     console.log(`扫描完成，找到 ${this.reviewQueue.length} 个待复习笔记`);
+    this.refreshView();
   }
 
-  // 计算下一次复习日期
+  // 重构：计算下次复习日期，增加随机性
   calculateNextReviewDate(repHistory: Date[], priority: 'high' | 'medium' | 'low' | null = null): Date {
     const today = new Date();
-    const interval = Math.ceil(
-      this.settings.multiplier ** Math.max(repHistory.length, 1)
-    );
-
-    // 根据优先级调整间隔
+    const interval = Math.ceil(this.settings.multiplier ** Math.max(repHistory.length, 1));
     const priorityMultiplier = priority ? this.settings.priorityMultipliers[priority] : 1.0;
     const adjustedInterval = Math.ceil(interval * priorityMultiplier);
 
-    const nextDate = new Date(today);
-    nextDate.setDate(today.getDate() + adjustedInterval);
+    // 解决问题2：增加随机因子
+    const randomFuzz = (Math.random() - 0.5) * 2 * this.settings.randomness;
+    const finalInterval = Math.max(1, Math.round(adjustedInterval * (1 + randomFuzz)));
 
+    const nextDate = new Date(today);
+    nextDate.setDate(today.getDate() + finalInterval);
     return nextDate;
   }
 
-  // 处理"下一步"操作
   async handleNext(note: ReviewNote) {
-    // 更新复习历史
     const today = new Date();
     note.repHistory.push(today);
-
-    // 计算下一次复习日期，考虑优先级
     note.reviewDate = this.calculateNextReviewDate(note.repHistory, note.priority);
-
-    // 更新笔记的元数据
     await this.updateNoteMetadata(note.file, note.reviewDate, note.repHistory);
+    
+    // 从队列中移除并重新排序
+    this.reviewQueue = this.reviewQueue.filter((n) => n.file.path !== note.file.path);
+    this.reviewQueue.push(note);
+    this.reviewQueue.sort((a, b) => a.reviewDate.getTime() - b.reviewDate.getTime());
 
-    // 从队列中移除当前笔记
-    this.reviewQueue = this.reviewQueue.filter(
-      (n) => n.file.path !== note.file.path
-    );
-
-    // 添加通知
-    new Notice(
-      `笔记 "${
-        note.file.basename
-      }" 已排程到 ${note.reviewDate.toLocaleDateString()}`
-    );
-
-    // 关闭当前笔记
+    new Notice(`笔记 "${note.file.basename}" 已排程到 ${note.reviewDate.toLocaleDateString()}`);
+    
     const leaves = this.app.workspace.getLeavesOfType("markdown");
     for (const leaf of leaves) {
       if (leaf.view instanceof MarkdownView && leaf.view.file?.path === note.file.path) {
@@ -466,29 +425,24 @@ export default class ReviewSchedulerPlugin extends Plugin {
       }
     }
 
-    // 打开下一篇笔记
     if (this.reviewQueue.length > 0) {
       const nextNote = this.reviewQueue[0];
-      if (nextNote) {
+      const nextNoteDate = new Date(nextNote.reviewDate);
+      nextNoteDate.setHours(0,0,0,0);
+      const todayDate = new Date();
+      todayDate.setHours(0,0,0,0);
+
+      if (nextNote && nextNoteDate.getTime() <= todayDate.getTime()) {
         this.app.workspace.getLeaf(true).openFile(nextNote.file);
       }
     }
   }
 
-  // 处理"搁置"操作
   async handleSetAside(note: ReviewNote) {
-    // 先移除笔记的复习元数据和标签
     await this.removeNoteReviewMetadata(note.file);
-    
-    // 从队列中移除笔记
-    this.reviewQueue = this.reviewQueue.filter(
-      (n) => n.file.path !== note.file.path
-    );
-
-    // 添加通知
+    this.reviewQueue = this.reviewQueue.filter((n) => n.file.path !== note.file.path);
     new Notice(`笔记 "${note.file.basename}" 已从复习队列中移除`);
 
-    // 关闭当前笔记
     const leaves = this.app.workspace.getLeavesOfType("markdown");
     for (const leaf of leaves) {
       if (leaf.view instanceof MarkdownView && leaf.view.file?.path === note.file.path) {
@@ -497,7 +451,6 @@ export default class ReviewSchedulerPlugin extends Plugin {
       }
     }
 
-    // 打开下一篇笔记
     if (this.reviewQueue.length > 0) {
       const nextNote = this.reviewQueue[0];
       if (nextNote) {
@@ -506,7 +459,7 @@ export default class ReviewSchedulerPlugin extends Plugin {
     }
   }
 
-  // 更新笔记元数据
+  // updateNoteMetadata, removeNoteReviewMetadata, setNotePriority 保持不变...
   async updateNoteMetadata(file: TFile, reviewDate: Date, repHistory: Date[]) {
     const content = await this.app.vault.read(file);
     const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
@@ -565,20 +518,16 @@ export default class ReviewSchedulerPlugin extends Plugin {
     }
   }
 
-  // 移除笔记的复习元数据
   async removeNoteReviewMetadata(file: TFile) {
-    // 读取文件内容
     const content = await this.app.vault.read(file);
     let newContent = content;
     
-    // 1. 处理 frontmatter
     const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
     const match = content.match(frontmatterRegex);
 
     if (match) {
       let frontmatterContent = match[1];
 
-      // 移除所有复习相关的元数据
       frontmatterContent = frontmatterContent
         .replace(/reviewDate:.*\n?/, "")
         .replace(/repHistory:.*\n?/, "")
@@ -586,21 +535,17 @@ export default class ReviewSchedulerPlugin extends Plugin {
         .replace(/sr-interval:.*\n?/, "")
         .replace(/sr-ease:.*\n?/, "");
 
-      // 移除 frontmatter 中的 review 标签
       if (frontmatterContent.includes("tags:")) {
-        // 处理 YAML 数组格式的标签
         frontmatterContent = frontmatterContent.replace(
           /tags:\s*\n\s*-\s*review\s*\n?/,
           "tags:\n"
         );
         
-        // 处理单行格式的标签
         frontmatterContent = frontmatterContent.replace(
           /tags:\s*review\s*\n/,
           ""
         );
         
-        // 处理数组格式的标签
         frontmatterContent = frontmatterContent.replace(
           /tags:\s*\[(.*?)\]/,
           (match, tags) => {
@@ -615,35 +560,28 @@ export default class ReviewSchedulerPlugin extends Plugin {
         );
       }
 
-      // 清理多余空行
       frontmatterContent = frontmatterContent.replace(/\n\s*\n/g, "\n").trim();
 
-      // 更新 frontmatter
       newContent = frontmatterContent
         ? content.replace(frontmatterRegex, `---\n${frontmatterContent}\n---`)
         : content.replace(frontmatterRegex, "").trim();
     }
     
-    // 2. 处理内联标签 (例如：#review)
     const inlineTagRegex = /#review\b/g;
     newContent = newContent.replace(inlineTagRegex, "");
     
-    // 保存修改
     await this.app.vault.modify(file, newContent);
     
     console.log(`已从笔记 ${file.basename} 中移除复习元数据和标签`);
   }
 
   async setNotePriority(note: ReviewNote, priority: 'high' | 'medium' | 'low') {
-    // 读取文件内容
     const content = await this.app.vault.read(note.file);
     
-    // 移除旧的优先级标签
     let newContent = content;
     let hasFrontmatter = false;
     let frontmatterContent = "";
     
-    // 处理 frontmatter
     const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
     const match = content.match(frontmatterRegex);
 
@@ -651,29 +589,23 @@ export default class ReviewSchedulerPlugin extends Plugin {
       hasFrontmatter = true;
       frontmatterContent = match[1];
 
-      // 移除所有优先级标签
       frontmatterContent = frontmatterContent
         .replace(/priority-high/g, "")
         .replace(/priority-medium/g, "")
         .replace(/priority-low/g, "");
 
-      // 处理 YAML 数组格式的标签
       if (frontmatterContent.includes("tags:")) {
-        // 删除空行
         frontmatterContent = frontmatterContent.replace(/tags:\s*\n\s*-\s*\n/g, "tags:\n");
         
-        // 检查是否有 tags 数组格式
         const yamlArrayTagsRegex = /tags:\s*\n(\s*-\s*.*\n)*/;
         const yamlArrayMatch = frontmatterContent.match(yamlArrayTagsRegex);
         
         if (yamlArrayMatch) {
-          // 添加新的优先级标签
           frontmatterContent = frontmatterContent.replace(
             yamlArrayTagsRegex,
             (match) => match + `  - priority-${priority}\n`
           );
         } else {
-          // 处理行内数组格式 [tag1, tag2]
           const inlineArrayRegex = /tags:\s*\[(.*?)\]/;
           const inlineMatch = frontmatterContent.match(inlineArrayRegex);
           
@@ -687,14 +619,12 @@ export default class ReviewSchedulerPlugin extends Plugin {
               `tags: [${tags.join(", ")}]`
             );
           } else {
-            // 单个标签的情况
             frontmatterContent = frontmatterContent.replace(
               /tags:\s*(.*?)(\n|$)/,
               (match, tag) => {
                 if (!tag || tag.trim() === "") {
                   return `tags: priority-${priority}\n`;
                 } else {
-                  // 处理空格分隔的标签
                   if (tag.includes(" ")) {
                     const tagList = tag.split(/\s+/).filter((t: string) => t && !t.startsWith("priority-"));
                     tagList.push(`priority-${priority}`);
@@ -708,29 +638,23 @@ export default class ReviewSchedulerPlugin extends Plugin {
           }
         }
       } else {
-        // 没有 tags 字段，添加一个
         frontmatterContent += `\ntags:\n  - review\n  - priority-${priority}`;
       }
 
-      // 更新 frontmatter
       newContent = content.replace(frontmatterRegex, `---\n${frontmatterContent}\n---`);
     } else {
-      // 没有 frontmatter，添加一个
       newContent = `---\ntags:\n  - review\n  - priority-${priority}\n---\n\n${content}`;
     }
     
-    // 保存修改
     await this.app.vault.modify(note.file, newContent);
     
-    // 更新优先级
     note.priority = priority;
     
-    // 添加通知
     new Notice(`笔记 "${note.file.basename}" 已设置为${priority === 'high' ? '高' : priority === 'medium' ? '中' : '低'}优先级`);
   }
 }
 
-// 视图类
+// ReviewSchedulerView 保持不变...
 class ReviewSchedulerView extends ItemView {
   plugin: ReviewSchedulerPlugin;
   currentNote: ReviewNote | null = null;
@@ -753,42 +677,15 @@ class ReviewSchedulerView extends ItemView {
   }
 
   async onOpen() {
-    // 重新扫描笔记
     await this.plugin.scanNotesForReview();
     this.render();
 
-    // 添加文件变更监听
-    this.registerEvent(
-      this.app.vault.on('modify', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.plugin.scanNotesForReview().then(() => this.render());
-        }
-      })
-    );
-    this.registerEvent(
-      this.app.vault.on('create', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.plugin.scanNotesForReview().then(() => this.render());
-        }
-      })
-    );
-    this.registerEvent(
-      this.app.vault.on('delete', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.plugin.scanNotesForReview().then(() => this.render());
-        }
-      })
-    );
-    this.registerEvent(
-      this.app.metadataCache.on('changed', (file) => {
-        if (file instanceof TFile && file.extension === 'md') {
-          this.plugin.scanNotesForReview().then(() => this.render());
-        }
-      })
-    );
+    this.registerEvent(this.app.vault.on('modify', (file) => { if (file instanceof TFile && file.extension === 'md') this.plugin.scanNotesForReview().then(() => this.render()); }));
+    this.registerEvent(this.app.vault.on('create', (file) => { if (file instanceof TFile && file.extension === 'md') this.plugin.scanNotesForReview().then(() => this.render()); }));
+    this.registerEvent(this.app.vault.on('delete', (file) => { if (file instanceof TFile && file.extension === 'md') this.plugin.scanNotesForReview().then(() => this.render()); }));
+    this.registerEvent(this.app.metadataCache.on('changed', (file) => { if (file instanceof TFile && file.extension === 'md') this.plugin.scanNotesForReview().then(() => this.render()); }));
   }
 
-  // 截断过长的标题
   truncateTitle(title: string, maxLength: number = 40): string {
     if (title.length <= maxLength) return title;
     return title.substring(0, maxLength) + "...";
@@ -797,114 +694,62 @@ class ReviewSchedulerView extends ItemView {
   render() {
     console.log('开始渲染视图...');
     
-    // 获取内容容器
     const contentEl = this.containerEl;
     contentEl.empty();
 
-    // 创建主容器
-    const mainContainer = contentEl.createDiv({
-      cls: "review-scheduler-container",
-    });
-
-    // 添加标题
-    const headerEl = mainContainer.createDiv({
-      cls: "review-scheduler-header",
-    });
+    const mainContainer = contentEl.createDiv({ cls: "review-scheduler-container" });
+    const headerEl = mainContainer.createDiv({ cls: "review-scheduler-header" });
     headerEl.createEl("h1", { text: "复习排程器" });
+    const contentContainer = mainContainer.createDiv({ cls: "review-scheduler-content" });
 
-    // 创建内容区域
-    const contentContainer = mainContainer.createDiv({
-      cls: "review-scheduler-content",
-    });
-
-    console.log(`队列长度: ${this.plugin.reviewQueue.length}`);
     if (this.plugin.reviewQueue.length === 0) {
       contentContainer.createEl("p", { text: "当前没有需要复习的笔记。" });
       return;
     }
 
-    // 显示今天需要复习的笔记
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    console.log(`今天日期: ${today.toISOString()}`);
 
     const dueTodayNotes = this.plugin.reviewQueue.filter((note) => {
       const noteDate = new Date(note.reviewDate);
       noteDate.setHours(0, 0, 0, 0);
-      try {
-        console.log(`笔记 ${note.file.basename} 的复习日期:`, note.reviewDate);
-        console.log(`笔记 ${note.file.basename} 的复习日期ISO格式:`, note.reviewDate.toISOString());
-      } catch (error) {
-        console.error(`笔记 ${note.file.basename} 的复习日期格式错误:`, note.reviewDate);
-        console.error('错误详情:', error);
-      }
       return noteDate.getTime() <= today.getTime();
     });
 
-    console.log(`今天需要复习的笔记数量: ${dueTodayNotes.length}`);
-
-    // 当天的复习笔记
-    const todaySection = contentContainer.createDiv({
-      cls: "review-section",
-    });
+    const todaySection = contentContainer.createDiv({ cls: "review-section" });
     todaySection.createEl("h2", { text: "今天需要复习" });
     
     if (dueTodayNotes.length > 0) {
-      this.currentNote = dueTodayNotes[0]; // 设置当前笔记
+      this.currentNote = dueTodayNotes[0];
       
       const todayList = todaySection.createEl("ul");
       
       for (const note of dueTodayNotes) {
         const item = todayList.createEl("li");
-        const isCurrentNote = note === this.currentNote;
-        
-        if (isCurrentNote) {
+        if (note === this.currentNote) {
           item.addClass("current-review-note");
         }
         
-        const noteInfo = item.createDiv({
-          cls: "review-note-info"
-        });
-        
-        noteInfo.createEl("span", {
-          text: this.truncateTitle(note.file.basename),
-          cls: "review-note-title"
-        });
-        
-        noteInfo.createEl("span", {
-          text: new Date(note.reviewDate).toLocaleDateString(),
-          cls: "review-note-date"
-        });
+        const noteInfo = item.createDiv({ cls: "review-note-info" });
+        noteInfo.createEl("span", { text: this.truncateTitle(note.file.basename), cls: "review-note-title" });
+        noteInfo.createEl("span", { text: new Date(note.reviewDate).toLocaleDateString(), cls: "review-note-date" });
 
-        // 添加点击事件，使点击笔记直接打开
         item.addEventListener("click", () => {
           this.currentNote = note;
           this.app.workspace.getLeaf(true).openFile(note.file);
-          this.render(); // 刷新视图以更新当前笔记高亮
+          this.render();
         });
       }
 
-      // 添加按钮容器
-      const buttonContainer = todaySection.createDiv({
-        cls: "review-buttons-container"
-      });
-
-      // 添加复习按钮
-      const reviewNowButton = buttonContainer.createEl("button", {
-        text: "开始复习",
-        cls: "review-now-button"
-      });
+      const buttonContainer = todaySection.createDiv({ cls: "review-buttons-container" });
+      const reviewNowButton = buttonContainer.createEl("button", { text: "开始复习", cls: "review-now-button" });
       reviewNowButton.addEventListener("click", () => {
         if (this.currentNote) {
           this.app.workspace.getLeaf(true).openFile(this.currentNote.file);
         }
       });
 
-      // 添加刷新按钮
-      const refreshButton = buttonContainer.createEl("button", {
-        text: "刷新",
-        cls: "refresh-button"
-      });
+      const refreshButton = buttonContainer.createEl("button", { text: "刷新", cls: "refresh-button" });
       refreshButton.addEventListener("click", () => {
         this.plugin.scanNotesForReview().then(() => {
           this.render();
@@ -913,12 +758,7 @@ class ReviewSchedulerView extends ItemView {
       });
     } else {
       todaySection.createEl("p", { text: "今天没有需要复习的笔记。" });
-      
-      // 添加刷新按钮
-      const refreshButton = todaySection.createEl("button", {
-        text: "刷新",
-        cls: "refresh-button"
-      });
+      const refreshButton = todaySection.createEl("button", { text: "刷新", cls: "refresh-button" });
       refreshButton.addEventListener("click", () => {
         this.plugin.scanNotesForReview().then(() => {
           this.render();
@@ -927,10 +767,7 @@ class ReviewSchedulerView extends ItemView {
       });
     }
 
-    // 显示即将到来的复习
-    const upcomingSection = contentContainer.createDiv({
-      cls: "review-section",
-    });
+    const upcomingSection = contentContainer.createDiv({ cls: "review-section" });
     upcomingSection.createEl("h2", { text: "即将到来的复习" });
 
     const upcomingNotes = this.plugin.reviewQueue
@@ -943,28 +780,15 @@ class ReviewSchedulerView extends ItemView {
 
     if (upcomingNotes.length > 0) {
       const upcomingList = upcomingSection.createEl("ul");
-
       for (const note of upcomingNotes) {
         const item = upcomingList.createEl("li");
-        const noteInfo = item.createDiv({
-          cls: "review-note-info"
-        });
-        
-        noteInfo.createEl("span", {
-          text: this.truncateTitle(note.file.basename),
-          cls: "review-note-title"
-        });
-        
-        noteInfo.createEl("span", {
-          text: new Date(note.reviewDate).toLocaleDateString(),
-          cls: "review-note-date"
-        });
-
-        // 添加点击事件，使点击笔记直接打开
+        const noteInfo = item.createDiv({ cls: "review-note-info" });
+        noteInfo.createEl("span", { text: this.truncateTitle(note.file.basename), cls: "review-note-title" });
+        noteInfo.createEl("span", { text: new Date(note.reviewDate).toLocaleDateString(), cls: "review-note-date" });
         item.addEventListener("click", () => {
           this.currentNote = note;
           this.app.workspace.getLeaf(true).openFile(note.file);
-          this.render(); // 刷新视图以更新当前笔记高亮
+          this.render();
         });
       }
     } else {
@@ -973,7 +797,7 @@ class ReviewSchedulerView extends ItemView {
   }
 }
 
-// 设置选项卡
+// 更新设置选项卡
 class ReviewSchedulerSettingTab extends PluginSettingTab {
   plugin: ReviewSchedulerPlugin;
 
@@ -998,6 +822,22 @@ class ReviewSchedulerSettingTab extends PluginSettingTab {
             const numValue = parseFloat(value);
             if (!isNaN(numValue) && numValue > 0) {
               this.plugin.settings.multiplier = numValue;
+              await this.plugin.saveSettings();
+            }
+          })
+      );
+
+    // 新增：排程随机度设置
+    new Setting(containerEl)
+      .setName("排程随机度")
+      .setDesc("为复习间隔增加随机性，避免笔记总在同一时间扎堆。例如0.1代表+/-10%的随机延迟。")
+      .addText((text) =>
+        text
+          .setValue(this.plugin.settings.randomness.toString())
+          .onChange(async (value) => {
+            const numValue = parseFloat(value);
+            if (!isNaN(numValue) && numValue >= 0 && numValue <= 1) {
+              this.plugin.settings.randomness = numValue;
               await this.plugin.saveSettings();
             }
           })
@@ -1051,84 +891,23 @@ class ReviewSchedulerSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("随机因子")
-      .setDesc("低优先级内容提前复习的概率，默认为0.2（20%概率）")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.randomFactor.toString())
-          .onChange(async (value) => {
-            const numValue = parseFloat(value);
-            if (!isNaN(numValue) && numValue >= 0 && numValue <= 1) {
-              this.plugin.settings.randomFactor = numValue;
-              await this.plugin.saveSettings();
-            }
-          })
-      );
+      .setName("随机因子 (旧)")
+      .setDesc("此设置已弃用，其功能已被新的排序和乱序逻辑取代。")
+      .addText((text) => {
+        text.setValue(this.plugin.settings.randomFactor.toString()).setDisabled(true);
+      });
 
+    // 快捷键设置保持不变...
     containerEl.createEl("h3", { text: "快捷键设置" });
-
-    new Setting(containerEl)
-      .setName("开始复习")
-      .setDesc("打开当前需要复习的笔记")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.hotkeys.startReview)
-          .onChange(async (value) => {
-            this.plugin.settings.hotkeys.startReview = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("删除笔记")
-      .setDesc("从复习队列中删除当前笔记")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.hotkeys.deleteNote)
-          .onChange(async (value) => {
-            this.plugin.settings.hotkeys.deleteNote = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("设置高优先级")
-      .setDesc("将当前笔记设置为高优先级")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.hotkeys.setPriorityHigh)
-          .onChange(async (value) => {
-            this.plugin.settings.hotkeys.setPriorityHigh = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("设置中优先级")
-      .setDesc("将当前笔记设置为中优先级")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.hotkeys.setPriorityMedium)
-          .onChange(async (value) => {
-            this.plugin.settings.hotkeys.setPriorityMedium = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("设置低优先级")
-      .setDesc("将当前笔记设置为低优先级")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.hotkeys.setPriorityLow)
-          .onChange(async (value) => {
-            this.plugin.settings.hotkeys.setPriorityLow = value;
-            await this.plugin.saveSettings();
-          })
-      );
+    new Setting(containerEl).setName("开始复习").setDesc("打开当前需要复习的笔记").addText((text) => text.setValue(this.plugin.settings.hotkeys.startReview).onChange(async (value) => { this.plugin.settings.hotkeys.startReview = value; await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName("删除笔记").setDesc("从复习队列中删除当前笔记").addText((text) => text.setValue(this.plugin.settings.hotkeys.deleteNote).onChange(async (value) => { this.plugin.settings.hotkeys.deleteNote = value; await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName("设置高优先级").setDesc("将当前笔记设置为高优先级").addText((text) => text.setValue(this.plugin.settings.hotkeys.setPriorityHigh).onChange(async (value) => { this.plugin.settings.hotkeys.setPriorityHigh = value; await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName("设置中优先级").setDesc("将当前笔记设置为中优先级").addText((text) => text.setValue(this.plugin.settings.hotkeys.setPriorityMedium).onChange(async (value) => { this.plugin.settings.hotkeys.setPriorityMedium = value; await this.plugin.saveSettings(); }));
+    new Setting(containerEl).setName("设置低优先级").setDesc("将当前笔记设置为低优先级").addText((text) => text.setValue(this.plugin.settings.hotkeys.setPriorityLow).onChange(async (value) => { this.plugin.settings.hotkeys.setPriorityLow = value; await this.plugin.saveSettings(); }));
   }
 }
 
+// SetReviewDateModal 保持不变...
 class SetReviewDateModal extends Modal {
   note: ReviewNote;
   plugin: ReviewSchedulerPlugin;
@@ -1155,14 +934,12 @@ class SetReviewDateModal extends Modal {
       const newDate = new Date(dateInput.value);
       newDate.setHours(0, 0, 0, 0);
       
-      // 更新笔记的复习日期
       this.note.reviewDate = newDate;
       await this.plugin.updateNoteMetadata(this.note.file, newDate, this.note.repHistory);
       
-      // 刷新视图
       const view = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]?.view as ReviewSchedulerView;
       if (view) {
-        view.render();
+        view.plugin.scanNotesForReview(); // 重新扫描并排序
       }
       
       this.close();
