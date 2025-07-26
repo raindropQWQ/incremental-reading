@@ -35,6 +35,7 @@ var DEFAULT_SETTINGS = {
     low: 1.2
   },
   randomFactor: 0.2,
+  randomness: 0.1,
   hotkeys: {
     startReview: "ctrl+shift+r",
     deleteNote: "ctrl+shift+d",
@@ -51,24 +52,20 @@ var ReviewSchedulerPlugin = class extends import_obsidian.Plugin {
   async onload() {
     await this.loadSettings();
     this.registerEvent(this.app.vault.on("modify", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.scanNotesForReview();
-      }
     }));
     this.registerEvent(this.app.vault.on("create", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.scanNotesForReview();
-      }
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.scanNotesForReview();
-      }
     }));
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.scanNotesForReview();
-      }
     }));
     this.registerView("review-scheduler-view", (leaf) => new ReviewSchedulerView(leaf, this));
     this.addCommand({
@@ -79,142 +76,187 @@ var ReviewSchedulerPlugin = class extends import_obsidian.Plugin {
     this.addCommand({
       id: "review-next",
       name: "\u590D\u4E60\uFF1A\u4E0B\u4E00\u6B65",
-      callback: async () => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          const currentNote = view.currentNote;
-          await this.handleNext(currentNote);
-          view.render();
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.handleNext(note).then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       }
     });
     this.addCommand({
       id: "review-set-aside",
       name: "\u590D\u4E60\uFF1A\u6401\u7F6E",
-      callback: async () => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          const currentNote = view.currentNote;
-          await this.handleSetAside(currentNote);
-          view.render();
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.handleSetAside(note).then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       }
     });
     this.addCommand({
       id: "review-start",
       name: "\u590D\u4E60\uFF1A\u5F00\u59CB\u590D\u4E60",
-      callback: async () => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          this.app.workspace.getLeaf(true).openFile(view.currentNote.file);
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.app.workspace.getLeaf(true).openFile(note.file);
+          }
+          return true;
         }
+        return false;
       }
     });
     this.addCommand({
       id: "review-delete",
       name: "\u590D\u4E60\uFF1A\u5220\u9664\u5F53\u524D\u7B14\u8BB0",
-      callback: async () => {
-        var _a, _b;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          const currentNote = view.currentNote;
-          const confirmDelete = await new Promise((resolve) => {
-            const modal = new import_obsidian.Modal(this.app);
-            modal.contentEl.createEl("h2", { text: "\u786E\u8BA4\u5220\u9664" });
-            modal.contentEl.createEl("p", {
-              text: `\u786E\u5B9A\u8981\u5220\u9664\u7B14\u8BB0 "${currentNote.file.basename}" \u5417\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002`
-            });
-            const buttonContainer = modal.contentEl.createDiv({ cls: "modal-button-container" });
-            const confirmButton = buttonContainer.createEl("button", {
-              text: "\u5220\u9664",
-              cls: "mod-warning"
-            });
-            confirmButton.addEventListener("click", () => {
-              resolve(true);
-              modal.close();
-            });
-            const cancelButton = buttonContainer.createEl("button", { text: "\u53D6\u6D88" });
-            cancelButton.addEventListener("click", () => {
-              resolve(false);
-              modal.close();
-            });
-            modal.open();
-          });
-          if (!confirmDelete)
-            return;
-          const leaves = this.app.workspace.getLeavesOfType("markdown");
-          for (const leaf of leaves) {
-            if (leaf.view instanceof import_obsidian.MarkdownView && ((_b = leaf.view.file) == null ? void 0 : _b.path) === currentNote.file.path) {
-              leaf.detach();
-              break;
-            }
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.handleDelete(note);
           }
-          this.reviewQueue = this.reviewQueue.filter((n) => n.file.path !== currentNote.file.path);
-          await this.app.vault.delete(currentNote.file);
-          if (this.reviewQueue.length > 0) {
-            const nextNote = this.reviewQueue[0];
-            if (nextNote) {
-              this.app.workspace.getLeaf(true).openFile(nextNote.file);
-            }
-          }
-          view.render();
-          new import_obsidian.Notice(`\u7B14\u8BB0 "${currentNote.file.basename}" \u5DF2\u6C38\u4E45\u5220\u9664`);
+          return true;
         }
+        return false;
       }
     });
     this.addCommand({
       id: "review-set-priority-high",
       name: "\u590D\u4E60\uFF1A\u8BBE\u7F6E\u4E3A\u9AD8\u4F18\u5148\u7EA7",
-      callback: async () => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          await this.setNotePriority(view.currentNote, "high");
-          view.render();
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.setNotePriority(note, "high").then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       }
     });
     this.addCommand({
       id: "review-set-priority-medium",
       name: "\u590D\u4E60\uFF1A\u8BBE\u7F6E\u4E3A\u4E2D\u4F18\u5148\u7EA7",
-      callback: async () => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          await this.setNotePriority(view.currentNote, "medium");
-          view.render();
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.setNotePriority(note, "medium").then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       }
     });
     this.addCommand({
       id: "review-set-priority-low",
       name: "\u590D\u4E60\uFF1A\u8BBE\u7F6E\u4E3A\u4F4E\u4F18\u5148\u7EA7",
-      callback: async () => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          await this.setNotePriority(view.currentNote, "low");
-          view.render();
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            this.setNotePriority(note, "low").then(() => this.refreshView());
+          }
+          return true;
         }
+        return false;
       }
     });
     this.addCommand({
       id: "review-set-custom-date",
       name: "\u590D\u4E60\uFF1A\u8BBE\u7F6E\u81EA\u5B9A\u4E49\u590D\u4E60\u65E5\u671F",
-      callback: async () => {
-        var _a;
-        const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
-        if (view == null ? void 0 : view.currentNote) {
-          const modal = new SetReviewDateModal(this.app, view.currentNote, this);
-          modal.open();
+      checkCallback: (checking) => {
+        const note = this.getNoteForAction();
+        if (note) {
+          if (!checking) {
+            new SetReviewDateModal(this.app, note, this).open();
+          }
+          return true;
         }
+        return false;
       }
     });
     this.addSettingTab(new ReviewSchedulerSettingTab(this.app, this));
     this.app.workspace.onLayoutReady(() => this.scanNotesForReview());
+  }
+  getNoteForAction() {
+    var _a;
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (activeView) {
+      const activeFile = activeView.file;
+      if (activeFile) {
+        const noteInQueue = this.reviewQueue.find((n) => n.file.path === activeFile.path);
+        if (noteInQueue) {
+          return noteInQueue;
+        }
+      }
+    }
+    const sidebarView = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
+    if (sidebarView == null ? void 0 : sidebarView.currentNote) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const noteDate = new Date(sidebarView.currentNote.reviewDate);
+      noteDate.setHours(0, 0, 0, 0);
+      if (noteDate.getTime() <= today.getTime()) {
+        return sidebarView.currentNote;
+      }
+    }
+    return null;
+  }
+  refreshView() {
+    var _a;
+    const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
+    if (view) {
+      view.render();
+    }
+  }
+  async handleDelete(currentNote) {
+    var _a;
+    const confirmDelete = await new Promise((resolve) => {
+      const modal = new import_obsidian.Modal(this.app);
+      modal.contentEl.createEl("h2", { text: "\u786E\u8BA4\u5220\u9664" });
+      modal.contentEl.createEl("p", { text: `\u786E\u5B9A\u8981\u5220\u9664\u7B14\u8BB0 "${currentNote.file.basename}" \u5417\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002` });
+      const buttonContainer = modal.contentEl.createDiv({ cls: "modal-button-container" });
+      const confirmButton = buttonContainer.createEl("button", { text: "\u5220\u9664", cls: "mod-warning" });
+      confirmButton.addEventListener("click", () => {
+        resolve(true);
+        modal.close();
+      });
+      const cancelButton = buttonContainer.createEl("button", { text: "\u53D6\u6D88" });
+      cancelButton.addEventListener("click", () => {
+        resolve(false);
+        modal.close();
+      });
+      modal.open();
+    });
+    if (!confirmDelete)
+      return;
+    const leaves = this.app.workspace.getLeavesOfType("markdown");
+    for (const leaf of leaves) {
+      if (leaf.view instanceof import_obsidian.MarkdownView && ((_a = leaf.view.file) == null ? void 0 : _a.path) === currentNote.file.path) {
+        leaf.detach();
+        break;
+      }
+    }
+    this.reviewQueue = this.reviewQueue.filter((n) => n.file.path !== currentNote.file.path);
+    await this.app.vault.delete(currentNote.file);
+    if (this.reviewQueue.length > 0) {
+      const nextNote = this.reviewQueue[0];
+      if (nextNote) {
+        this.app.workspace.getLeaf(true).openFile(nextNote.file);
+      }
+    }
+    this.refreshView();
+    new import_obsidian.Notice(`\u7B14\u8BB0 "${currentNote.file.basename}" \u5DF2\u6C38\u4E45\u5220\u9664`);
   }
   onunload() {
   }
@@ -233,15 +275,12 @@ var ReviewSchedulerPlugin = class extends import_obsidian.Plugin {
     }
     const leaf = workspace.getLeftLeaf(false);
     if (leaf) {
-      await leaf.setViewState({
-        type: "review-scheduler-view",
-        active: true
-      });
+      await leaf.setViewState({ type: "review-scheduler-view", active: true });
       workspace.revealLeaf(leaf);
     }
   }
   async scanNotesForReview() {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c;
     console.log("\u5F00\u59CB\u626B\u63CF\u7B14\u8BB0...");
     this.reviewQueue = [];
     const files = this.app.vault.getMarkdownFiles();
@@ -250,18 +289,8 @@ var ReviewSchedulerPlugin = class extends import_obsidian.Plugin {
       let hasReviewTag = false;
       let priority = null;
       if ((_a = metadata == null ? void 0 : metadata.frontmatter) == null ? void 0 : _a.tags) {
-        let tags = [];
-        if (Array.isArray(metadata.frontmatter.tags)) {
-          tags = metadata.frontmatter.tags;
-          console.log(`\u6587\u4EF6 ${file.basename} \u4F7F\u7528\u6570\u7EC4\u683C\u5F0F\u7684\u6807\u7B7E:`, tags);
-        } else if (typeof metadata.frontmatter.tags === "string") {
-          tags = metadata.frontmatter.tags.split(/\s+/);
-          console.log(`\u6587\u4EF6 ${file.basename} \u4F7F\u7528\u7A7A\u683C\u5206\u9694\u7684\u6807\u7B7E\u5B57\u7B26\u4E32:`, metadata.frontmatter.tags, "\u5206\u5272\u540E:", tags);
-        } else {
-          tags = [metadata.frontmatter.tags];
-          console.log(`\u6587\u4EF6 ${file.basename} \u4F7F\u7528\u5176\u4ED6\u683C\u5F0F\u7684\u6807\u7B7E:`, metadata.frontmatter.tags);
-        }
-        hasReviewTag = tags.some((tag) => typeof tag === "string" && tag.toLowerCase().startsWith("review"));
+        const tags = Array.isArray(metadata.frontmatter.tags) ? metadata.frontmatter.tags : String(metadata.frontmatter.tags).split(/\s+/);
+        hasReviewTag = tags.some((tag) => String(tag).toLowerCase().startsWith("review"));
         if (tags.includes("priority-high"))
           priority = "high";
         else if (tags.includes("priority-medium"))
@@ -286,56 +315,58 @@ var ReviewSchedulerPlugin = class extends import_obsidian.Plugin {
       today2.setHours(0, 0, 0, 0);
       const reviewDate = ((_b = metadata == null ? void 0 : metadata.frontmatter) == null ? void 0 : _b.reviewDate) ? new Date(metadata.frontmatter.reviewDate) : today2;
       const repHistory = ((_c = metadata == null ? void 0 : metadata.frontmatter) == null ? void 0 : _c.repHistory) || [];
-      try {
-        console.log(`\u5904\u7406\u7B14\u8BB0 ${file.basename} \u7684\u590D\u4E60\u65E5\u671F:`, (_d = metadata == null ? void 0 : metadata.frontmatter) == null ? void 0 : _d.reviewDate);
-        console.log(`\u8F6C\u6362\u540E\u7684\u65E5\u671F\u5BF9\u8C61:`, reviewDate);
-        console.log(`\u590D\u4E60\u5386\u53F2:`, repHistory);
-      } catch (error) {
-        console.error(`\u7B14\u8BB0 ${file.basename} \u7684\u65E5\u671F\u683C\u5F0F\u9519\u8BEF:`, (_e = metadata == null ? void 0 : metadata.frontmatter) == null ? void 0 : _e.reviewDate);
-        console.error("\u9519\u8BEF\u8BE6\u60C5:", error);
-      }
-      this.reviewQueue.push({
-        file,
-        reviewDate,
-        repHistory,
-        priority
-      });
+      this.reviewQueue.push({ file, reviewDate, repHistory, priority });
     }
     this.reviewQueue.sort((a, b) => {
       const dateCompare = a.reviewDate.getTime() - b.reviewDate.getTime();
       if (dateCompare !== 0)
         return dateCompare;
-      const priorityOrder = { high: 0, medium: 1, low: 2 };
-      const aPriority = a.priority ? priorityOrder[a.priority] : 3;
-      const bPriority = b.priority ? priorityOrder[b.priority] : 3;
-      return aPriority - bPriority;
+      return a.file.stat.ctime - b.file.stat.ctime;
     });
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayNotes = this.reviewQueue.filter((note) => {
+    const dueNotes = this.reviewQueue.filter((note) => {
       const noteDate = new Date(note.reviewDate);
       noteDate.setHours(0, 0, 0, 0);
-      return noteDate.getTime() <= today.getTime() && note.priority === "low";
+      return noteDate.getTime() <= today.getTime();
     });
-    if (todayNotes.length > 0) {
-      for (let i = todayNotes.length - 1; i > 0; i--) {
-        if (Math.random() < this.settings.randomFactor) {
-          const randomIndex = Math.floor(Math.random() * (i + 1));
-          const temp = todayNotes[i];
-          todayNotes[i] = todayNotes[randomIndex];
-          todayNotes[randomIndex] = temp;
-        }
+    const upcomingNotes = this.reviewQueue.filter((note) => {
+      const noteDate = new Date(note.reviewDate);
+      noteDate.setHours(0, 0, 0, 0);
+      return noteDate.getTime() > today.getTime();
+    });
+    const priorityGroups = {
+      high: dueNotes.filter((n) => n.priority === "high"),
+      medium: dueNotes.filter((n) => n.priority === "medium"),
+      low: dueNotes.filter((n) => n.priority === "low"),
+      none: dueNotes.filter((n) => n.priority === null)
+    };
+    const shuffle = (array) => {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
       }
-    }
+      return array;
+    };
+    this.reviewQueue = [
+      ...shuffle(priorityGroups.high),
+      ...shuffle(priorityGroups.medium),
+      ...shuffle(priorityGroups.low),
+      ...shuffle(priorityGroups.none),
+      ...upcomingNotes
+    ];
     console.log(`\u626B\u63CF\u5B8C\u6210\uFF0C\u627E\u5230 ${this.reviewQueue.length} \u4E2A\u5F85\u590D\u4E60\u7B14\u8BB0`);
+    this.refreshView();
   }
   calculateNextReviewDate(repHistory, priority = null) {
     const today = new Date();
     const interval = Math.ceil(this.settings.multiplier ** Math.max(repHistory.length, 1));
     const priorityMultiplier = priority ? this.settings.priorityMultipliers[priority] : 1;
     const adjustedInterval = Math.ceil(interval * priorityMultiplier);
+    const randomFuzz = (Math.random() - 0.5) * 2 * this.settings.randomness;
+    const finalInterval = Math.max(1, Math.round(adjustedInterval * (1 + randomFuzz)));
     const nextDate = new Date(today);
-    nextDate.setDate(today.getDate() + adjustedInterval);
+    nextDate.setDate(today.getDate() + finalInterval);
     return nextDate;
   }
   async handleNext(note) {
@@ -345,6 +376,8 @@ var ReviewSchedulerPlugin = class extends import_obsidian.Plugin {
     note.reviewDate = this.calculateNextReviewDate(note.repHistory, note.priority);
     await this.updateNoteMetadata(note.file, note.reviewDate, note.repHistory);
     this.reviewQueue = this.reviewQueue.filter((n) => n.file.path !== note.file.path);
+    this.reviewQueue.push(note);
+    this.reviewQueue.sort((a, b) => a.reviewDate.getTime() - b.reviewDate.getTime());
     new import_obsidian.Notice(`\u7B14\u8BB0 "${note.file.basename}" \u5DF2\u6392\u7A0B\u5230 ${note.reviewDate.toLocaleDateString()}`);
     const leaves = this.app.workspace.getLeavesOfType("markdown");
     for (const leaf of leaves) {
@@ -355,7 +388,11 @@ var ReviewSchedulerPlugin = class extends import_obsidian.Plugin {
     }
     if (this.reviewQueue.length > 0) {
       const nextNote = this.reviewQueue[0];
-      if (nextNote) {
+      const nextNoteDate = new Date(nextNote.reviewDate);
+      nextNoteDate.setHours(0, 0, 0, 0);
+      const todayDate = new Date();
+      todayDate.setHours(0, 0, 0, 0);
+      if (nextNote && nextNoteDate.getTime() <= todayDate.getTime()) {
         this.app.workspace.getLeaf(true).openFile(nextNote.file);
       }
     }
@@ -540,24 +577,20 @@ var ReviewSchedulerView = class extends import_obsidian.ItemView {
     await this.plugin.scanNotesForReview();
     this.render();
     this.registerEvent(this.app.vault.on("modify", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.plugin.scanNotesForReview().then(() => this.render());
-      }
     }));
     this.registerEvent(this.app.vault.on("create", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.plugin.scanNotesForReview().then(() => this.render());
-      }
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.plugin.scanNotesForReview().then(() => this.render());
-      }
     }));
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
-      if (file instanceof import_obsidian.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian.TFile && file.extension === "md")
         this.plugin.scanNotesForReview().then(() => this.render());
-      }
     }));
   }
   truncateTitle(title, maxLength = 40) {
@@ -569,83 +602,48 @@ var ReviewSchedulerView = class extends import_obsidian.ItemView {
     console.log("\u5F00\u59CB\u6E32\u67D3\u89C6\u56FE...");
     const contentEl = this.containerEl;
     contentEl.empty();
-    const mainContainer = contentEl.createDiv({
-      cls: "review-scheduler-container"
-    });
-    const headerEl = mainContainer.createDiv({
-      cls: "review-scheduler-header"
-    });
+    const mainContainer = contentEl.createDiv({ cls: "review-scheduler-container" });
+    const headerEl = mainContainer.createDiv({ cls: "review-scheduler-header" });
     headerEl.createEl("h1", { text: "\u590D\u4E60\u6392\u7A0B\u5668" });
-    const contentContainer = mainContainer.createDiv({
-      cls: "review-scheduler-content"
-    });
-    console.log(`\u961F\u5217\u957F\u5EA6: ${this.plugin.reviewQueue.length}`);
+    const contentContainer = mainContainer.createDiv({ cls: "review-scheduler-content" });
     if (this.plugin.reviewQueue.length === 0) {
       contentContainer.createEl("p", { text: "\u5F53\u524D\u6CA1\u6709\u9700\u8981\u590D\u4E60\u7684\u7B14\u8BB0\u3002" });
       return;
     }
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    console.log(`\u4ECA\u5929\u65E5\u671F: ${today.toISOString()}`);
     const dueTodayNotes = this.plugin.reviewQueue.filter((note) => {
       const noteDate = new Date(note.reviewDate);
       noteDate.setHours(0, 0, 0, 0);
-      try {
-        console.log(`\u7B14\u8BB0 ${note.file.basename} \u7684\u590D\u4E60\u65E5\u671F:`, note.reviewDate);
-        console.log(`\u7B14\u8BB0 ${note.file.basename} \u7684\u590D\u4E60\u65E5\u671FISO\u683C\u5F0F:`, note.reviewDate.toISOString());
-      } catch (error) {
-        console.error(`\u7B14\u8BB0 ${note.file.basename} \u7684\u590D\u4E60\u65E5\u671F\u683C\u5F0F\u9519\u8BEF:`, note.reviewDate);
-        console.error("\u9519\u8BEF\u8BE6\u60C5:", error);
-      }
       return noteDate.getTime() <= today.getTime();
     });
-    console.log(`\u4ECA\u5929\u9700\u8981\u590D\u4E60\u7684\u7B14\u8BB0\u6570\u91CF: ${dueTodayNotes.length}`);
-    const todaySection = contentContainer.createDiv({
-      cls: "review-section"
-    });
+    const todaySection = contentContainer.createDiv({ cls: "review-section" });
     todaySection.createEl("h2", { text: "\u4ECA\u5929\u9700\u8981\u590D\u4E60" });
     if (dueTodayNotes.length > 0) {
       this.currentNote = dueTodayNotes[0];
       const todayList = todaySection.createEl("ul");
       for (const note of dueTodayNotes) {
         const item = todayList.createEl("li");
-        const isCurrentNote = note === this.currentNote;
-        if (isCurrentNote) {
+        if (note === this.currentNote) {
           item.addClass("current-review-note");
         }
-        const noteInfo = item.createDiv({
-          cls: "review-note-info"
-        });
-        noteInfo.createEl("span", {
-          text: this.truncateTitle(note.file.basename),
-          cls: "review-note-title"
-        });
-        noteInfo.createEl("span", {
-          text: new Date(note.reviewDate).toLocaleDateString(),
-          cls: "review-note-date"
-        });
+        const noteInfo = item.createDiv({ cls: "review-note-info" });
+        noteInfo.createEl("span", { text: this.truncateTitle(note.file.basename), cls: "review-note-title" });
+        noteInfo.createEl("span", { text: new Date(note.reviewDate).toLocaleDateString(), cls: "review-note-date" });
         item.addEventListener("click", () => {
           this.currentNote = note;
           this.app.workspace.getLeaf(true).openFile(note.file);
           this.render();
         });
       }
-      const buttonContainer = todaySection.createDiv({
-        cls: "review-buttons-container"
-      });
-      const reviewNowButton = buttonContainer.createEl("button", {
-        text: "\u5F00\u59CB\u590D\u4E60",
-        cls: "review-now-button"
-      });
+      const buttonContainer = todaySection.createDiv({ cls: "review-buttons-container" });
+      const reviewNowButton = buttonContainer.createEl("button", { text: "\u5F00\u59CB\u590D\u4E60", cls: "review-now-button" });
       reviewNowButton.addEventListener("click", () => {
         if (this.currentNote) {
           this.app.workspace.getLeaf(true).openFile(this.currentNote.file);
         }
       });
-      const refreshButton = buttonContainer.createEl("button", {
-        text: "\u5237\u65B0",
-        cls: "refresh-button"
-      });
+      const refreshButton = buttonContainer.createEl("button", { text: "\u5237\u65B0", cls: "refresh-button" });
       refreshButton.addEventListener("click", () => {
         this.plugin.scanNotesForReview().then(() => {
           this.render();
@@ -654,10 +652,7 @@ var ReviewSchedulerView = class extends import_obsidian.ItemView {
       });
     } else {
       todaySection.createEl("p", { text: "\u4ECA\u5929\u6CA1\u6709\u9700\u8981\u590D\u4E60\u7684\u7B14\u8BB0\u3002" });
-      const refreshButton = todaySection.createEl("button", {
-        text: "\u5237\u65B0",
-        cls: "refresh-button"
-      });
+      const refreshButton = todaySection.createEl("button", { text: "\u5237\u65B0", cls: "refresh-button" });
       refreshButton.addEventListener("click", () => {
         this.plugin.scanNotesForReview().then(() => {
           this.render();
@@ -665,9 +660,7 @@ var ReviewSchedulerView = class extends import_obsidian.ItemView {
         });
       });
     }
-    const upcomingSection = contentContainer.createDiv({
-      cls: "review-section"
-    });
+    const upcomingSection = contentContainer.createDiv({ cls: "review-section" });
     upcomingSection.createEl("h2", { text: "\u5373\u5C06\u5230\u6765\u7684\u590D\u4E60" });
     const upcomingNotes = this.plugin.reviewQueue.filter((note) => {
       const noteDate = new Date(note.reviewDate);
@@ -678,17 +671,9 @@ var ReviewSchedulerView = class extends import_obsidian.ItemView {
       const upcomingList = upcomingSection.createEl("ul");
       for (const note of upcomingNotes) {
         const item = upcomingList.createEl("li");
-        const noteInfo = item.createDiv({
-          cls: "review-note-info"
-        });
-        noteInfo.createEl("span", {
-          text: this.truncateTitle(note.file.basename),
-          cls: "review-note-title"
-        });
-        noteInfo.createEl("span", {
-          text: new Date(note.reviewDate).toLocaleDateString(),
-          cls: "review-note-date"
-        });
+        const noteInfo = item.createDiv({ cls: "review-note-info" });
+        noteInfo.createEl("span", { text: this.truncateTitle(note.file.basename), cls: "review-note-title" });
+        noteInfo.createEl("span", { text: new Date(note.reviewDate).toLocaleDateString(), cls: "review-note-date" });
         item.addEventListener("click", () => {
           this.currentNote = note;
           this.app.workspace.getLeaf(true).openFile(note.file);
@@ -716,6 +701,13 @@ var ReviewSchedulerSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       }
     }));
+    new import_obsidian.Setting(containerEl).setName("\u6392\u7A0B\u968F\u673A\u5EA6").setDesc("\u4E3A\u590D\u4E60\u95F4\u9694\u589E\u52A0\u968F\u673A\u6027\uFF0C\u907F\u514D\u7B14\u8BB0\u603B\u5728\u540C\u4E00\u65F6\u95F4\u624E\u5806\u3002\u4F8B\u59820.1\u4EE3\u8868+/-10%\u7684\u968F\u673A\u5EF6\u8FDF\u3002").addText((text) => text.setValue(this.plugin.settings.randomness.toString()).onChange(async (value) => {
+      const numValue = parseFloat(value);
+      if (!isNaN(numValue) && numValue >= 0 && numValue <= 1) {
+        this.plugin.settings.randomness = numValue;
+        await this.plugin.saveSettings();
+      }
+    }));
     containerEl.createEl("h3", { text: "\u4F18\u5148\u7EA7\u8BBE\u7F6E" });
     new import_obsidian.Setting(containerEl).setName("\u9AD8\u4F18\u5148\u7EA7\u4E58\u6570").setDesc("\u9AD8\u4F18\u5148\u7EA7\u5185\u5BB9\u7684\u590D\u4E60\u95F4\u9694\u4E58\u6570\uFF0C\u9ED8\u8BA4\u4E3A0.8\uFF08\u51CF\u5C1120%\u5EF6\u8FDF\uFF09").addText((text) => text.setValue(this.plugin.settings.priorityMultipliers.high.toString()).onChange(async (value) => {
       const numValue = parseFloat(value);
@@ -738,13 +730,9 @@ var ReviewSchedulerSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       }
     }));
-    new import_obsidian.Setting(containerEl).setName("\u968F\u673A\u56E0\u5B50").setDesc("\u4F4E\u4F18\u5148\u7EA7\u5185\u5BB9\u63D0\u524D\u590D\u4E60\u7684\u6982\u7387\uFF0C\u9ED8\u8BA4\u4E3A0.2\uFF0820%\u6982\u7387\uFF09").addText((text) => text.setValue(this.plugin.settings.randomFactor.toString()).onChange(async (value) => {
-      const numValue = parseFloat(value);
-      if (!isNaN(numValue) && numValue >= 0 && numValue <= 1) {
-        this.plugin.settings.randomFactor = numValue;
-        await this.plugin.saveSettings();
-      }
-    }));
+    new import_obsidian.Setting(containerEl).setName("\u968F\u673A\u56E0\u5B50 (\u65E7)").setDesc("\u6B64\u8BBE\u7F6E\u5DF2\u5F03\u7528\uFF0C\u5176\u529F\u80FD\u5DF2\u88AB\u65B0\u7684\u6392\u5E8F\u548C\u4E71\u5E8F\u903B\u8F91\u53D6\u4EE3\u3002").addText((text) => {
+      text.setValue(this.plugin.settings.randomFactor.toString()).setDisabled(true);
+    });
     containerEl.createEl("h3", { text: "\u5FEB\u6377\u952E\u8BBE\u7F6E" });
     new import_obsidian.Setting(containerEl).setName("\u5F00\u59CB\u590D\u4E60").setDesc("\u6253\u5F00\u5F53\u524D\u9700\u8981\u590D\u4E60\u7684\u7B14\u8BB0").addText((text) => text.setValue(this.plugin.settings.hotkeys.startReview).onChange(async (value) => {
       this.plugin.settings.hotkeys.startReview = value;
@@ -790,7 +778,7 @@ var SetReviewDateModal = class extends import_obsidian.Modal {
       await this.plugin.updateNoteMetadata(this.note.file, newDate, this.note.repHistory);
       const view = (_a = this.app.workspace.getLeavesOfType("review-scheduler-view")[0]) == null ? void 0 : _a.view;
       if (view) {
-        view.render();
+        view.plugin.scanNotesForReview();
       }
       this.close();
       new import_obsidian.Notice(`\u7B14\u8BB0 "${this.note.file.basename}" \u7684\u590D\u4E60\u65E5\u671F\u5DF2\u66F4\u65B0\u4E3A ${newDate.toLocaleDateString()}`);
